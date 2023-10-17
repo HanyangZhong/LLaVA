@@ -10,3 +10,19 @@ DEFAULT_IMAGE_TOKEN = "<image>"
 DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
 DEFAULT_IM_START_TOKEN = "<im_start>"
 DEFAULT_IM_END_TOKEN = "<im_end>"
+AUDIO_TOKEN_INDEX = -300
+DEFAULT_AUDIO_TOKEN = "<audio>"
+DEFAULT_AUDIO_PATCH_TOKEN = "<au_patch>"
+DEFAULT_AU_START_TOKEN = "<au_start>"
+DEFAULT_AU_END_TOKEN = "<au_end>"
+COMPACT_TOKEN_INDEX = -400
+DEFAULT_COMPACT_TOKEN = "<compact>"
+<<<<<<< Updated upstream
+DEFAULT_COMPACT_PATCH_TOKEN = "<com_patch>"
+DEFAULT_COMPACT_START_TOKEN = "<com_start>"
+DEFAULT_COMPACT_END_TOKEN = "<com_end>"
+=======
+DEFAULT_COM_PATCH_TOKEN = "<com_patch>"
+DEFAULT_COM_START_TOKEN = "<com_start>"
+DEFAULT_COM_END_TOKEN = "<com_end>"
+>>>>>>> Stashed changes

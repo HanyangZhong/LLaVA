@@ -9,7 +9,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llava import LlavaLlamaForCausalLM
 
-
+# 使用delta
 def apply_delta(base_model_path, target_model_path, delta_path):
     print("Loading base model")
     base = AutoModelForCausalLM.from_pretrained(
@@ -22,7 +22,10 @@ def apply_delta(base_model_path, target_model_path, delta_path):
     print("Applying delta")
     for name, param in tqdm(delta.state_dict().items(), desc="Applying delta"):
         if name not in base.state_dict():
-            assert name in ['model.mm_projector.weight', 'model.mm_projector.bias'], f'{name} not in base model'
+            assert name in ['model.mm_vision_projector.weight', 'model.mm_vision_projector.bias'], f'{name} not in base model'
+            continue
+        if name not in base.state_dict():
+            assert name in ['model.mm_audio_projector.weight', 'model.mm_audio_projector.bias'], f'{name} not in base model'
             continue
         if param.data.shape == base.state_dict()[name].shape:
             param.data += base.state_dict()[name]

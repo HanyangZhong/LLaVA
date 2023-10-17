@@ -24,26 +24,31 @@ from transformers import AutoConfig, AutoModelForCausalLM, \
 
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
+from ..llava_arch import RobotGPTMetaModel, RobotGPTMetaForCausalLM
 
 
-class LlavaConfig(LlamaConfig):
-    model_type = "llava"
+class RobotGPTConfig(LlamaConfig):
+    model_type = "robotgpt"
 
 
-class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
-    config_class = LlavaConfig
+class RobotGPTLlamaModel(RobotGPTMetaModel, LlamaModel):
+    config_class = RobotGPTConfig
 
     def __init__(self, config: LlamaConfig):
-        super(LlavaLlamaModel, self).__init__(config)
+<<<<<<< Updated upstream
+        super(RobotGPTMetaForCausalLM, self).__init__(config)
+=======
+        super(RobotGPTLlamaModel, self).__init__(config)
+    
+>>>>>>> Stashed changes
 
 
-class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
-    config_class = LlavaConfig
+class robotgptLlamaForCausalLM(LlamaForCausalLM, RobotGPTMetaForCausalLM):
+    config_class = RobotGPTConfig
 
     def __init__(self, config):
         super(LlamaForCausalLM, self).__init__(config)
-        self.model = LlavaLlamaModel(config)
+        self.model = RobotGPTLlamaModel(config)
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -64,6 +69,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         images: Optional[torch.FloatTensor] = None,
+        audio: Optional[torch.FloatTensor] = None,
+        # non_train_flag = 0,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -72,8 +79,23 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images)
+        print('in function')
+        # 图文训练
+        if images is not None and audio is None:
+            print('running here1')
+            input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_visionmodal(input_ids, attention_mask, past_key_values, labels, images)
 
+        # 音频文训练
+        if audio is not None and images is None:
+            print('running here2')
+            input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_audiomodal(input_ids, attention_mask, past_key_values, labels, audio)
+        
+        # 图音 加文 
+        if audio is not None and images is not None:
+            print('running here3')
+            input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, attention_mask, past_key_values, labels, images,audio)
+        
+        print('go to output')
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -136,5 +158,5 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         )
         return model_inputs
 
-AutoConfig.register("llava", LlavaConfig)
-AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)
+AutoConfig.register("robotgpt", RobotGPTConfig)
+AutoModelForCausalLM.register(RobotGPTConfig, robotgptLlamaForCausalLM)

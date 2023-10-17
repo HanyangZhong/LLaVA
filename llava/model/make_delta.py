@@ -9,7 +9,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from llava.model.utils import auto_upgrade
 
-
+# 配置新加的权重和配置位置
+# 保存
 def make_delta(base_model_path, target_model_path, delta_path, hub_repo_id):
     print("Loading base model")
     base = AutoModelForCausalLM.from_pretrained(
@@ -22,7 +23,10 @@ def make_delta(base_model_path, target_model_path, delta_path, hub_repo_id):
     print("Calculating delta")
     for name, param in tqdm(target.state_dict().items(), desc="Calculating delta"):
         if name not in base.state_dict():
-            assert name in ['model.mm_projector.weight', 'model.mm_projector.bias'], f'{name} not in base model'
+            assert name in ['model.mm_vision_projector.weight', 'model.mm_vision_projector.bias'], f'{name} not in base model'
+            continue
+        if name not in base.state_dict():
+            assert name in ['model.mm_audio_projector.weight', 'model.mm_audio_projector.bias'], f'{name} not in base model'
             continue
         if param.data.shape == base.state_dict()[name].shape:
             param.data -= base.state_dict()[name]
@@ -30,6 +34,7 @@ def make_delta(base_model_path, target_model_path, delta_path, hub_repo_id):
             assert name in ['model.embed_tokens.weight', 'lm_head.weight'], f'{name} dimension mismatch: {param.data.shape} vs {base.state_dict()[name].shape}'
             bparam = base.state_dict()[name]
             param.data[:bparam.shape[0], :bparam.shape[1]] -= bparam
+
 
     print("Saving delta")
     if hub_repo_id:

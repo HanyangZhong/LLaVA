@@ -26,6 +26,9 @@ class CLIPVisionTower(nn.Module):
 
         self.is_loaded = True
 
+    # 选择特征层 前向传播不是直接用其作为特征  用某层做特征 
+    # 如果patch 就将该层特征切片
+    # 如果cls——patch 就取
     def feature_select(self, image_forward_outs):
         image_features = image_forward_outs.hidden_states[self.select_layer]
         if self.select_feature == 'patch':
@@ -50,6 +53,8 @@ class CLIPVisionTower(nn.Module):
 
         return image_features
 
+    # 它创建一个形状为 (1, self.hidden_​​size) 的张量
+    # 张量用零填充   张量设备和数据类型分别设置为匹配 self.device 和 self.dtype。
     @property
     def dummy_feature(self):
         return torch.zeros(1, self.hidden_size, device=self.device, dtype=self.dtype)
@@ -73,6 +78,10 @@ class CLIPVisionTower(nn.Module):
     def hidden_size(self):
         return self.config.hidden_size
 
+    # 计算图像模型的补丁数
+    # 这将计算在给定图像大小和块大小的情况下将图像划分为的块总数
+    # 它将其公开为可读属性以方便访问
+    # 这可能用在基于补丁的视觉模型（如 ViT）中，以确定补丁投影的输出尺寸
     @property
     def num_patches(self):
         return (self.config.image_size // self.config.patch_size) ** 2

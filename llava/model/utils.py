@@ -3,7 +3,7 @@ from transformers import AutoConfig
 
 def auto_upgrade(config):
     cfg = AutoConfig.from_pretrained(config)
-    if 'llava' in config and 'llava' not in cfg.model_type:
+    if 'robotgpt' in config and 'robotgpt' not in cfg.model_type:
         assert cfg.model_type == 'llama'
         print("You are using newer LLaVA code base, while the checkpoint of v0 is from older code base.")
         print("You must upgrade the checkpoint to the new code base (this can be done automatically).")

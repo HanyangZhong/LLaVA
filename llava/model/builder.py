@@ -20,10 +20,10 @@ import shutil
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 import torch
 from llava.model import *
-from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN,DEFAULT_AUDIO_PATCH_TOKEN,DEFAULT_AU_START_TOKEN,DEFAULT_AU_END_TOKEN
 
-
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda"):
+# 加载模型
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto"):
     kwargs = {"device_map": device_map}
 
     if load_8bit:
@@ -39,21 +39,28 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     else:
         kwargs['torch_dtype'] = torch.float16
 
-    if 'llava' in model_name.lower():
+    # llava相关的模型
+    if 'robotgpt' in model_name.lower():
         # Load LLaVA model
         if 'lora' in model_name.lower() and model_base is None:
             warnings.warn('There is `lora` in model name but no `model_base` is provided. If you are loading a LoRA model, please provide the `model_base` argument. Detailed instruction: https://github.com/haotian-liu/LLaVA#launch-a-model-worker-lora-weights-unmerged.')
+        # 加载llava的lora模型 插拔式加载
         if 'lora' in model_name.lower() and model_base is not None:
+            # 先加载lora的tokenizer
             lora_cfg_pretrained = AutoConfig.from_pretrained(model_path)
+            # 再加载原模型tokenizer
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-            print('Loading LLaVA from base model...')
-            model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
+            print('Loading robotgpt from base model...')
+            # 并从加载原模型参数
+            model = robotgptLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
+            # 获取lm头的输出和输入特征尺寸
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
             if model.lm_head.weight.shape[0] != token_num:
                 model.lm_head.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
                 model.model.embed_tokens.weight = torch.nn.Parameter(torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
-
-            print('Loading additional LLaVA weights...')
+            print('Loading additional robotgpt weights...')
+            # 再加载lora的模型参数
+            # 如果有这个参数文件就直接加载
             if os.path.exists(os.path.join(model_path, 'non_lora_trainables.bin')):
                 non_lora_trainables = torch.load(os.path.join(model_path, 'non_lora_trainables.bin'), map_location='cpu')
             else:
@@ -65,42 +72,60 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         filename=filename,
                         subfolder=subfolder)
                     return torch.load(cache_file, map_location='cpu')
+                # 如果没有就从huggingface上下载参数文件
                 non_lora_trainables = load_from_hf(model_path, 'non_lora_trainables.bin')
             non_lora_trainables = {(k[11:] if k.startswith('base_model.') else k): v for k, v in non_lora_trainables.items()}
             if any(k.startswith('model.model.') for k in non_lora_trainables):
                 non_lora_trainables = {(k[6:] if k.startswith('model.') else k): v for k, v in non_lora_trainables.items()}
             model.load_state_dict(non_lora_trainables, strict=False)
 
+            # 最后用peft加载 从基础模型model中加入lora权重
+            # 获取最后的model形态
             from peft import PeftModel
             print('Loading LoRA weights...')
             model = PeftModel.from_pretrained(model, model_path)
             print('Merging LoRA weights...')
+            # 将基础模型model和lora权重融合到一起
             model = model.merge_and_unload()
             print('Model is loaded...')
+            # 接下来可以保存模型
+
+        # 只加载原模型
+        # mpt分支 未配置
         elif model_base is not None:
             # this may be mm projector only
             print('Loading LLaVA from base model...')
+            # mpt 模型加载
             if 'mpt' in model_name.lower():
                 if not os.path.isfile(os.path.join(model_path, 'configuration_mpt.py')):
                     shutil.copyfile(os.path.join(model_base, 'configuration_mpt.py'), os.path.join(model_path, 'configuration_mpt.py'))
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=True)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
                 model = LlavaMPTForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+            # 非 mpt模型加载
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
-                model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
+                model = robotgptLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
-            mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
-            mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
-            model.load_state_dict(mm_projector_weights, strict=False)
+            a = os.path.join(model_path, 'mm_vision_projector.bin')
+            b = os.path.join(model_path, 'mm_audio_projector.bin')
+
+            if os.path.exists(a):
+                mm_vision_projector_weights = torch.load(os.path.join(model_path, 'mm_vision_projector.bin'), map_location='cpu')
+                mm_vision_projector_weights = {k: v.to(torch.float16) for k, v in mm_vision_projector_weights.items()}
+                model.load_state_dict(mm_vision_projector_weights, strict=False)
+            if os.path.exists(b):
+                mm_audio_projector_weights = torch.load(os.path.join(model_path, 'mm_audio_projector.bin'), map_location='cpu')
+                mm_audio_projector_weights = {k: v.to(torch.float16) for k, v in mm_audio_projector_weights.items()}
+                model.load_state_dict(mm_audio_projector_weights, strict=False)
         else:
             if 'mpt' in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 model = LlavaMPTForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-                model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
+                model = robotgptLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
     else:
         # Load language model
         if model_base is not None:
@@ -124,25 +149,43 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
 
     image_processor = None
+    audio_processor = None
 
-    if 'llava' in model_name.lower():
-        mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
-        mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
-        if mm_use_im_patch_token:
+    if 'robotgpt' in model_name.lower():
+        # 定义视觉头参数
+        mm_vision_use_im_start_end = getattr(model.config, "mm_vision_use_im_start_end", False)
+        mm_vision_use_im_patch_token = getattr(model.config, "mm_vision_use_im_patch_token", True)
+        if mm_vision_use_im_start_end:
             tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
-        if mm_use_im_start_end:
+        if mm_vision_use_im_patch_token:
             tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
+        # 定义音频头参数
+        mm_audio_use_im_start_end = getattr(model.config, "mm_audio_use_im_start_end", False)
+        mm_audio_use_im_patch_token = getattr(model.config, "mm_audio_use_im_patch_token", True)
+        if mm_audio_use_im_start_end:
+            tokenizer.add_tokens([DEFAULT_AUDIO_PATCH_TOKEN], special_tokens=True)
+        if mm_audio_use_im_patch_token:
+            tokenizer.add_tokens([DEFAULT_AU_START_TOKEN, DEFAULT_AU_END_TOKEN], special_tokens=True)
+        
         model.resize_token_embeddings(len(tokenizer))
 
         vision_tower = model.get_vision_tower()
-        if not vision_tower.is_loaded:
-            vision_tower.load_model()
-        vision_tower.to(device=device, dtype=torch.float16)
-        image_processor = vision_tower.image_processor
+        audio_tower = model.get_audio_tower()
+        if vision_tower is not None:
+            if not vision_tower.is_loaded:
+                vision_tower.load_model()
+            vision_tower.to(device='cuda', dtype=torch.float16)
+            image_processor = vision_tower.image_processor
+            
+        if audio_tower is not None:
+            if not audio_tower.is_loaded:
+                audio_tower.load_model()
+            audio_tower.to(device='cuda', dtype=torch.float16)
+            audio_processor = audio_tower.audio_processor
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length
     else:
         context_len = 2048
 
-    return tokenizer, model, image_processor, context_len
+    return tokenizer, model, image_processor, audio_processor, context_len

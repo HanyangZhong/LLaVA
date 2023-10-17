@@ -21,18 +21,25 @@ import json
 import logging
 import pathlib
 from typing import Dict, Optional, Sequence, List
-
+import soundfile as sf
 import torch
-
+from scipy.io import wavfile
+from scipy.signal import resample
+import numpy as np
 import transformers
 
-from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_AUDIO_TOKEN, DEFAULT_AU_START_TOKEN, DEFAULT_AU_END_TOKEN,DEFAULT_COMPACT_TOKEN,DEFAULT_COM_START_TOKEN,DEFAULT_COM_END_TOKEN
 from torch.utils.data import Dataset
-from llava.train.llava_trainer import LLaVATrainer
+from llava.train.llava_trainer import robotGPTTrainer
+<<<<<<< Updated upstream
+from llava.model.language_model import RobotGPTLlamaModel
+=======
+from llava.model.language_model.llava_llama import RobotGPTLlamaModel
+>>>>>>> Stashed changes
 
 from llava import conversation as conversation_lib
 from llava.model import *
-from llava.mm_utils import tokenizer_image_token
+from llava.mm_utils import tokenizer_image_token,tokenizer_audio_token,tokenizer_compact_token
 
 from PIL import Image
 
@@ -54,10 +61,24 @@ class ModelArguments:
     vision_tower: Optional[str] = field(default=None)
     mm_vision_select_layer: Optional[int] = field(default=-1)   # default to the last layer
     pretrain_mm_mlp_adapter: Optional[str] = field(default=None)
-    mm_projector_type: Optional[str] = field(default='linear')
     mm_use_im_start_end: bool = field(default=False)
     mm_use_im_patch_token: bool = field(default=True)
     mm_vision_select_feature: Optional[str] = field(default="patch")
+<<<<<<< Updated upstream
+=======
+    # audio
+    tune_mm_audio_mlp_adapter: bool = field(default=False)
+    audio_tower: Optional[str] = field(default=None)
+    mm_audio_select_layer: Optional[int] = field(default=-1)   # default to the last layer
+    pretrain_mm_audio_mlp_adapter: Optional[str] = field(default=None)
+    mm_audio_use_im_start_end: bool = field(default=False)
+    mm_audio_use_im_patch_token: bool = field(default=True)
+    mm_audio_select_feature: Optional[str] = field(default="patch")
+    # compact
+    compact_model: bool = field(default=False)
+    tune_mm_compact_mlp_adapter: bool = field(default=False)
+    mm_compact_use_im_start_end: bool = field(default=False)
+>>>>>>> Stashed changes
 
 
 @dataclass
@@ -103,7 +124,6 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_dropout: float = 0.05
     lora_weight_path: str = ""
     lora_bias: str = "none"
-    group_by_modality_length: bool = field(default=False)
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -142,7 +162,7 @@ def get_peft_state_maybe_zero_3(named_params, bias):
                 to_return[bias_name] = t
     else:
         raise NotImplementedError
-    to_return = {k: maybe_zero_3(v, ignore_status=True) for k, v in to_return.items()}
+    to_return = {k: maybe_zero_3(v, name=k) for k, v in to_return.items()}
     return to_return
 
 
@@ -154,11 +174,16 @@ def get_peft_state_non_lora_maybe_zero_3(named_params, require_grad_only=True):
     return to_return
 
 
-def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
+def get_mm_vision_adapter_state_maybe_zero_3(named_params, keys_to_match):
     to_return = {k: t for k, t in named_params if any(key_match in k for key_match in keys_to_match)}
     to_return = {k: maybe_zero_3(v, ignore_status=True).cpu() for k, v in to_return.items()}
     return to_return
 
+
+def get_mm_audio_adapter_state_maybe_zero_3(named_params, keys_to_match):
+    to_return = {k: t for k, t in named_params if any(key_match in k for key_match in keys_to_match)}
+    to_return = {k: maybe_zero_3(v, ignore_status=True).cpu() for k, v in to_return.items()}
+    return to_return
 
 def find_all_linear_names(model):
     cls = torch.nn.Linear
@@ -177,25 +202,45 @@ def find_all_linear_names(model):
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
-
-    if getattr(trainer.args, "tune_mm_mlp_adapter", False):
+    # 保存视觉adapter layer
+    if getattr(trainer.args, "tune_mm_vision_mlp_adapter", False):
         # Only save Adapter
-        keys_to_match = ['mm_projector']
-        if getattr(trainer.args, "use_im_start_end", False):
+        keys_to_match = ['mm_vision_projector']
+        if getattr(trainer.args, "use_vision_im_start_end", False):
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
-        weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+        weight_to_save = get_mm_vision_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
         trainer.model.config.save_pretrained(output_dir)
 
         current_folder = output_dir.split('/')[-1]
         parent_folder = os.path.dirname(output_dir)
         if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
             if current_folder.startswith('checkpoint-'):
-                mm_projector_folder = os.path.join(parent_folder, "mm_projector")
+                mm_projector_folder = os.path.join(parent_folder, "mm_vision_projector")
                 os.makedirs(mm_projector_folder, exist_ok=True)
                 torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
             else:
-                torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+                torch.save(weight_to_save, os.path.join(output_dir, f'mm_vision_projector.bin'))
+        return
+    # 保存音频adapter layer
+    if getattr(trainer.args, "tune_mm_audio_mlp_adapter", False):
+        # Only save Adapter
+        keys_to_match = ['mm_audio_projector']
+        if getattr(trainer.args, "use_audio_im_start_end", False):
+            keys_to_match.extend(['embed_tokens', 'embed_in'])
+
+        weight_to_save = get_mm_audio_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+        trainer.model.config.save_pretrained(output_dir)
+
+        current_folder = output_dir.split('/')[-1]
+        parent_folder = os.path.dirname(output_dir)
+        if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
+            if current_folder.startswith('checkpoint-'):
+                mm_projector_folder = os.path.join(parent_folder, "mm_audio_projector")
+                os.makedirs(mm_projector_folder, exist_ok=True)
+                torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
+            else:
+                torch.save(weight_to_save, os.path.join(output_dir, f'mm_audio_projector.bin'))
         return
 
     if trainer.deepspeed:
@@ -296,12 +341,13 @@ def _add_speaker_and_signal(header, source, get_conversation=True):
     conversation += BEGIN_SIGNAL
     return conversation
 
-
+# 多模态预处理 已做多模态配置
 def preprocess_multimodal(
     sources: Sequence[str],
     data_args: DataArguments
 ) -> Dict:
     is_multimodal = data_args.is_multimodal
+<<<<<<< Updated upstream
     if not is_multimodal:
         return sources
 
@@ -313,10 +359,85 @@ def preprocess_multimodal(
                 sentence['value'] = sentence['value'].strip()
                 if "mmtag" in conversation_lib.default_conversation.version:
                     sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
-            replace_token = DEFAULT_IMAGE_TOKEN
-            if data_args.mm_use_im_start_end:
-                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+            replace_vision_token = DEFAULT_IMAGE_TOKEN
+
+            if DEFAULT_AUDIO_TOKEN in sentence['value']:
+                sentence['value'] = sentence['value'].replace(DEFAULT_AUDIO_TOKEN, '').strip()
+                sentence['value'] = DEFAULT_AUDIO_TOKEN + '\n' + sentence['value']
+                sentence['value'] = sentence['value'].strip()
+                if "mmtag" in conversation_lib.default_conversation.version:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_AUDIO_TOKEN, '<audio>' + DEFAULT_AUDIO_TOKEN + '</audio>')
+            replace_audio_token = DEFAULT_AUDIO_TOKEN
+
+            if DEFAULT_COMPACT_TOKEN in sentence['value']:
+                sentence['value'] = sentence['value'].replace(DEFAULT_COMPACT_TOKEN, '').strip()
+                sentence['value'] = DEFAULT_COMPACT_TOKEN + '\n' + sentence['value']
+                sentence['value'] = sentence['value'].strip()
+                if "mmtag" in conversation_lib.default_conversation.version:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_COMPACT_TOKEN, '<audio>' + DEFAULT_COMPACT_TOKEN + '</audio>')
+            replace_compact_token = DEFAULT_COMPACT_TOKEN
+
+            if data_args.mm_vision_use_im_start_end:
+                replace_vision_token = DEFAULT_IM_START_TOKEN + replace_vision_token + DEFAULT_IM_END_TOKEN
+            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_vision_token)
+
+            if data_args.mm_audio_use_im_start_end:
+                replace_audio_token = DEFAULT_AU_START_TOKEN + replace_audio_token + DEFAULT_AU_END_TOKEN
+            sentence["value"] = sentence["value"].replace(DEFAULT_AUDIO_TOKEN, replace_audio_token)
+
+            if data_args.mm_compact_use_im_start_end:
+                replace_compact_token = DEFAULT_COM_START_TOKEN + replace_compact_token + DEFAULT_COM_END_TOKEN
+            sentence["value"] = sentence["value"].replace(DEFAULT_AUDIO_TOKEN, replace_compact_token)
+=======
+    if is_multimodal == 'text':
+        return sources
+
+    if is_multimodal == 'vision':
+        for source in sources:
+            for sentence in source:
+                if DEFAULT_IMAGE_TOKEN in sentence['value']:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+                    sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                    sentence['value'] = sentence['value'].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
+                replace_vision_token = DEFAULT_IMAGE_TOKEN
+
+                if data_args.mm_vision_use_im_start_end:
+                    replace_vision_token = DEFAULT_IM_START_TOKEN + replace_vision_token + DEFAULT_IM_END_TOKEN
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_vision_token)
+
+    if is_multimodal == 'audio':
+        for source in sources:
+            for sentence in source:
+                if DEFAULT_AUDIO_TOKEN in sentence['value']:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_AUDIO_TOKEN, '').strip()
+                    sentence['value'] = DEFAULT_AUDIO_TOKEN + '\n' + sentence['value']
+                    sentence['value'] = sentence['value'].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence['value'] = sentence['value'].replace(DEFAULT_AUDIO_TOKEN, '<audio>' + DEFAULT_AUDIO_TOKEN + '</audio>')
+                replace_audio_token = DEFAULT_AUDIO_TOKEN
+
+                if data_args.mm_audio_use_im_start_end:
+                    replace_audio_token = DEFAULT_AU_START_TOKEN + replace_audio_token + DEFAULT_AU_END_TOKEN
+                sentence["value"] = sentence["value"].replace(DEFAULT_AUDIO_TOKEN, replace_audio_token)
+
+    if is_multimodal == 'compact':
+        for source in sources:
+            for sentence in source:
+                if DEFAULT_COMPACT_TOKEN in sentence['value']:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_COMPACT_TOKEN, '').strip()
+                    sentence['value'] = DEFAULT_COMPACT_TOKEN + '\n' + sentence['value']
+                    sentence['value'] = sentence['value'].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence['value'] = sentence['value'].replace(DEFAULT_COMPACT_TOKEN, '<audio>' + DEFAULT_COMPACT_TOKEN + '</audio>')
+                replace_compact_token = DEFAULT_COMPACT_TOKEN
+
+
+                if data_args.mm_compact_use_im_start_end:
+                    replace_compact_token = DEFAULT_COM_START_TOKEN + replace_compact_token + DEFAULT_COM_END_TOKEN
+                sentence["value"] = sentence["value"].replace(DEFAULT_AUDIO_TOKEN, replace_compact_token)
+>>>>>>> Stashed changes
 
     return sources
 
@@ -402,11 +523,12 @@ def preprocess_llama_2(
         labels=targets,
     )
 
-
+# v1版本预处理 已做音频图片处理
 def preprocess_v1(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
+    has_image: bool = False,
+    has_audio: bool = False
 ) -> Dict:
     conv = conversation_lib.default_conversation.copy()
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
@@ -423,12 +545,19 @@ def preprocess_v1(
             role = roles[sentence["from"]]
             assert role == conv.roles[j % 2], f"{i}"
             conv.append_message(role, sentence["value"])
+        # 找到多轮对话的方式
         conversations.append(conv.get_prompt())
 
     # Tokenize conversations
-
-    if has_image:
+    # 图
+    if has_image and not has_audio:
         input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    # 音
+    elif has_audio and not has_image:
+        input_ids = torch.stack([tokenizer_audio_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    # 图加音
+    elif has_audio and has_image :
+        input_ids = torch.stack([tokenizer_compact_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
     else:
         input_ids = tokenizer(
             conversations,
@@ -437,6 +566,8 @@ def preprocess_v1(
             max_length=tokenizer.model_max_length,
             truncation=True,
         ).input_ids
+
+    
 
     targets = input_ids.clone()
 
@@ -459,9 +590,18 @@ def preprocess_v1(
                 break
             parts[0] += sep
 
-            if has_image:
+            # 图
+            if has_image and not has_audio:
                 round_len = len(tokenizer_image_token(rou, tokenizer))
                 instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+            # 音
+            elif has_audio and not has_image:
+                round_len = len(tokenizer_audio_token(rou, tokenizer))
+                instruction_len = len(tokenizer_audio_token(parts[0], tokenizer)) - 2
+            # 图音
+            elif has_audio and has_image:
+                round_len = len(tokenizer_compact_token(rou, tokenizer))
+                instruction_len = len(tokenizer_compact_token(parts[0], tokenizer)) - 2
             else:
                 round_len = len(tokenizer(rou).input_ids)
                 instruction_len = len(tokenizer(parts[0]).input_ids) - 2
@@ -573,10 +713,12 @@ def preprocess_plain(
     return dict(input_ids=input_ids, labels=targets)
 
 
+# 预处理
 def preprocess(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
-    has_image: bool = False
+    has_image: bool = False,
+    has_audio: bool = False
 ) -> Dict:
     """
     Given a list of sources, each is a conversation list. This transform:
@@ -590,7 +732,7 @@ def preprocess(
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_2:
         return preprocess_llama_2(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version.startswith("v1"):
-        return preprocess_v1(sources, tokenizer, has_image=has_image)
+        return preprocess_v1(sources, tokenizer, has_image=has_image,has_audio=has_audio)
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer)
     # add end signal and concatenate together
@@ -600,19 +742,34 @@ def preprocess(
         conversation = _add_speaker_and_signal(header, source)
         conversations.append(conversation)
     # tokenize conversations
-    def get_tokenize_len(prompts):
+    def get_tokenize_len_img(prompts):
         return [len(tokenizer_image_token(prompt, tokenizer)) for prompt in prompts]
+    # tokenize conversations
+    def get_tokenize_len_audio(prompts):
+        return [len(tokenizer_audio_token(prompt, tokenizer)) for prompt in prompts]
 
-    if has_image:
+    if has_image and not has_audio:
         input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    elif has_audio and not has_image:
+        input_ids = [tokenizer_audio_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    elif has_audio and has_image:
+        input_ids_1 = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+        input_ids_2 = [tokenizer_audio_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+        input_ids = input_ids_1 + input_ids_2
     else:
         conversations_tokenized = _tokenize_fn(conversations, tokenizer)
         input_ids = conversations_tokenized["input_ids"]
 
     targets = copy.deepcopy(input_ids)
     for target, source in zip(targets, sources):
-        if has_image:
-            tokenized_lens = get_tokenize_len([header] + [s["value"] for s in source])
+        if has_image and not has_audio:
+            tokenized_lens = get_tokenize_len_img([header] + [s["value"] for s in source])
+        if has_audio and not has_image:
+            tokenized_lens = get_tokenize_len_audio([header] + [s["value"] for s in source])
+        if has_image and has_audio:
+            tokenized_lens_v = get_tokenize_len_img([header] + [s["value"] for s in source])
+            tokenized_lens_a = get_tokenize_len_audio([header] + [s["value"] for s in source])
+            tokenized_lens = tokenized_lens_v + tokenized_lens_a
         else:
             tokenized_lens = _tokenize_fn([header] + [s["value"] for s in source], tokenizer)["input_ids_lens"]
         speakers = [sentence["from"] for sentence in source]
@@ -620,7 +777,7 @@ def preprocess(
 
     return dict(input_ids=input_ids, labels=targets)
 
-
+# 加载数据集
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -638,29 +795,12 @@ class LazySupervisedDataset(Dataset):
     def __len__(self):
         return len(self.list_data_dict)
 
-    @property
-    def lengths(self):
-        length_list = []
-        for sample in self.list_data_dict:
-            img_tokens = 128 if 'image' in sample else 0
-            length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
-        return length_list
-
-    @property
-    def modality_lengths(self):
-        length_list = []
-        for sample in self.list_data_dict:
-            cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
-            length_list.append(cur_len)
-        return length_list
-
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
         if isinstance(i, int):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
-        if 'image' in sources[0]:
+        if 'image' in sources[0] and 'audio' not in sources[0]:
             image_file = self.list_data_dict[i]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
@@ -685,6 +825,104 @@ class LazySupervisedDataset(Dataset):
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
+        elif 'audio' in sources[0] and 'image' not in sources[0]:
+            audio_file = self.list_data_dict[i]['audio']
+            # print(audio_file)
+            audio_folder = self.data_args.audio_folder
+            processor = self.data_args.audio_processor
+            # print(audio_folder)
+
+            sample_rate, dual_audio = wavfile.read(os.path.join(audio_folder, audio_file)) 
+            # dual_audio, sample_rate = sf.read(os.path.join(audio_folder, audio_file))
+            audio = np.mean(dual_audio, axis=1) 
+            
+            # Resample to 16000 Hz if needed
+            # print(audio)
+            # old ：(480000,)
+            # arr = np.array(audio)
+            # print('old_audio:',arr.shape)
+            if sample_rate != 16000:
+                # print('len:',len(audio))
+                number_of_samples = round(len(audio) * float(16000) / sample_rate)
+                # number_of_samples = round( float(16000) / sample_rate)
+                # print(number_of_samples)
+                audio = resample(audio, number_of_samples)
+                sample_rate = 16000
+                # print(audio)
+                # new_audio: (160000,)
+                # arr = np.array(audio)
+                # print('new_audio:',arr.shape)
+            
+            # print('audio:',audio)
+            # print('sample_rate:',sample_rate)
+            # print('audio array:',audio['array'])
+            # Optionally convert to desired format
+            # audio = audio.T # transpose to channels x samples
+            # audio = audio.astype('float32') / 32768.0 # normalize 16-bit audio
+            # if self.data_args.image_aspect_ratio == 'pad':
+            #     def expand2square(pil_img, background_color):
+            #         width, height = pil_img.size
+            #         if width == height:
+            #             return pil_img
+            #         elif width > height:
+            #             result = Image.new(pil_img.mode, (width, width), background_color)
+            #             result.paste(pil_img, (0, (width - height) // 2))
+            #             return result
+            #         else:
+            #             result = Image.new(pil_img.mode, (height, height), background_color)
+            #             result.paste(pil_img, ((height - width) // 2, 0))
+            #             return result
+            #     image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+            #     image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            # else:
+            audio = processor(audio, sampling_rate=sample_rate, return_tensors="pt",do_normalize = False)
+            # new_new_audio: torch.Size([1, 160000])
+            # print('new_new_audio:',audio['input_values'].shape)
+            # print('audio become:',audio)
+            sources = preprocess_multimodal(
+                copy.deepcopy([e["conversations"] for e in sources]),
+                self.data_args)
+        
+        elif 'image' in sources[0] and 'audio' in sources[0]:
+            image_file = self.list_data_dict[i]['image']
+            image_folder = self.data_args.image_folder
+            image_processor = self.data_args.image_processor
+            audio_file = self.list_data_dict[i]['audio']
+            audio_folder = self.data_args.audio_folder
+            audio_processor = self.data_args.image_processor
+            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            sample_rate, audio = wavfile.read(os.path.join(audio_folder, audio_file)) 
+            # Resample to 16000 Hz if needed
+            if sample_rate != 16000:
+                number_of_samples = round(len(audio) * float(16000) / sample_rate)
+                audio = resample(audio, number_of_samples)
+                sample_rate = 16000
+            # audio, sample_rate = sf.read(os.path.join(audio_folder, audio_file))
+            # Optionally convert to desired format
+            # audio = audio.T # transpose to channels x samples
+            # audio = audio.astype('float32') / 32768.0 # normalize 16-bit audio
+            audio = audio_processor(audio, sampling_rate=sample_rate, return_tensors="pt")
+            if self.data_args.image_aspect_ratio == 'pad':
+                def expand2square(pil_img, background_color):
+                    width, height = pil_img.size
+                    if width == height:
+                        return pil_img
+                    elif width > height:
+                        result = Image.new(pil_img.mode, (width, width), background_color)
+                        result.paste(pil_img, (0, (width - height) // 2))
+                        return result
+                    else:
+                        result = Image.new(pil_img.mode, (height, height), background_color)
+                        result.paste(pil_img, ((height - width) // 2, 0))
+                        return result
+                image = expand2square(image, tuple(int(x*255) for x in image_processor.image_mean))
+                image = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            else:
+                image = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            sources = preprocess_multimodal(
+                copy.deepcopy([e["conversations"] for e in sources]),
+                self.data_args)
+
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
         data_dict = preprocess(
@@ -696,15 +934,20 @@ class LazySupervisedDataset(Dataset):
                              labels=data_dict["labels"][0])
 
         # image exist in the data
-        if 'image' in self.list_data_dict[i]:
+        if 'image' in self.list_data_dict[i] and 'audio' not in self.list_data_dict[i]:
             data_dict['image'] = image
-        elif self.data_args.is_multimodal:
+        elif 'audio' in self.list_data_dict[i] and 'image' not in self.list_data_dict[i]:
+            data_dict['audio'] = audio
+        elif 'audio' in self.list_data_dict[i] and 'image' in self.list_data_dict[i]:
+            data_dict['image'] = image
+            data_dict['audio'] = audio
+        elif self.data_args.is_multimodal == 'image':
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
         return data_dict
 
-
+# 监督数据收集
 @dataclass
 class DataCollatorForSupervisedDataset(object):
     """Collate examples for supervised fine-tuning."""
@@ -736,6 +979,18 @@ class DataCollatorForSupervisedDataset(object):
             else:
                 batch['images'] = images
 
+        if 'audio' in instances[0]:
+            audio = [instance['audio'] for instance in instances]
+            # print(audio[0])
+            # print(type(audio))
+            # if all(x is not None and x.shape == audio[0].shape for x in audio):
+            # if type(audio) == 'list':
+            #     for audio_data in audio:
+            #         batch['audio'] = torch.stack(audio)
+            # else:
+            batch['audio'] = audio
+
+        
         return batch
 
 
@@ -751,6 +1006,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 data_collator=data_collator)
 
 
+# 训练主流程
 def train():
     global local_rank
 
@@ -761,6 +1017,7 @@ def train():
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
 
     bnb_model_from_pretrained_args = {}
+    # 量化
     if training_args.bits in [4, 8]:
         from transformers import BitsAndBytesConfig
         bnb_model_from_pretrained_args.update(dict(
@@ -778,7 +1035,13 @@ def train():
             )
         ))
 
+    # 加载视觉头
+<<<<<<< Updated upstream
     if model_args.vision_tower is not None:
+=======
+    if model_args.vision_tower is not None and model_args.audio_tower is None:
+>>>>>>> Stashed changes
+        # mpt分支视觉头 未配置
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
             config.attn_config['attn_impl'] = training_args.mpt_attn_impl
@@ -789,10 +1052,13 @@ def train():
                 **bnb_model_from_pretrained_args
             )
         else:
-            model = LlavaLlamaForCausalLM.from_pretrained(
+            # 普通头，不加载config
+<<<<<<< Updated upstream
+            model = RobotGPTLlamaModel.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
-                **bnb_model_from_pretrained_args
+                **bnb_model_from_pretrained_args,
+                ignore_mismatched_sizes=True
             )
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
@@ -802,14 +1068,48 @@ def train():
         )
     model.config.use_cache = False
 
+    # 加载音频头
+    if model_args.audio_tower is not None:
+        # mpt分支音频头 未配置
+        if 'mpt' in model_args.model_name_or_path:
+            config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
+            config.attn_config['attn_impl'] = training_args.mpt_attn_impl
+            model = LlavaMPTForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                config=config,
+                cache_dir=training_args.cache_dir,
+                **bnb_model_from_pretrained_args
+            )
+        else:
+            # 普通头，不加载config
+            model = RobotGPTLlamaModel.from_pretrained(
+=======
+            model = robotgptLlamaForCausalLM.from_pretrained(
+>>>>>>> Stashed changes
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                **bnb_model_from_pretrained_args,
+                ignore_mismatched_sizes=True
+            )
+    else:
+        model = transformers.LlamaForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            **bnb_model_from_pretrained_args
+        )
+    model.config.use_cache = False
+
+    # 模型主体冻结
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
 
+    # 模型量化参数
     if training_args.bits in [4, 8]:
         from peft import prepare_model_for_kbit_training
         model.config.torch_dtype=(torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
 
+    # 梯度回流输入
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
@@ -818,16 +1118,21 @@ def train():
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
+    # 用lora做微调
     if training_args.lora_enable:
         from peft import LoraConfig, get_peft_model
+        # 加载lora参数
+        # 这里直接用了全部线性层做lora
         lora_config = LoraConfig(
             r=training_args.lora_r,
             lora_alpha=training_args.lora_alpha,
+            # 用所有全连接层名字 所有都做adapter layer
             target_modules=find_all_linear_names(model),
             lora_dropout=training_args.lora_dropout,
             bias=training_args.lora_bias,
             task_type="CAUSAL_LM",
         )
+        # 数据类型
         if training_args.bits == 16:
             if training_args.bf16:
                 model.to(torch.bfloat16)
@@ -836,6 +1141,7 @@ def train():
         rank0_print("Adding LoRA adapters...")
         model = get_peft_model(model, lora_config)
 
+    # mpt模式 未配置
     if 'mpt' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
@@ -844,6 +1150,7 @@ def train():
             padding_side="right"
         )
     else:
+        # 普通模式
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -852,6 +1159,7 @@ def train():
             use_fast=False,
         )
 
+    # v0 补丁方式
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
@@ -868,40 +1176,193 @@ def train():
         else:
             conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
 
+    # 视觉头
     if model_args.vision_tower is not None:
         model.get_model().initialize_vision_modules(
             model_args=model_args,
             fsdp=training_args.fsdp
         )
         
+        # 视觉头单独处理
         vision_tower = model.get_vision_tower()
-        vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+        vision_tower.to(dtype=torch.float16, device=training_args.device)
 
         data_args.image_processor = vision_tower.image_processor
         data_args.is_multimodal = True
 
+        # 设置图像信息
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
 
-        model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
-        if model_args.tune_mm_mlp_adapter:
+        # 设置adapter layer位置
+        model.config.tune_mm_vision_mlp_adapter = training_args.tune_mm_vision_mlp_adapter = model_args.tune_mm_vision_mlp_adapter
+        # 模型冻结梯度 只有投影位置训练
+        if model_args.tune_mm_vision_mlp_adapter:
             model.requires_grad_(False)
-            for p in model.get_model().mm_projector.parameters():
+            for p in model.get_model().mm_vision_projector.parameters():
                 p.requires_grad = True
 
-        model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
-        if training_args.freeze_mm_mlp_adapter:
-            for p in model.get_model().mm_projector.parameters():
+        # 整体冻结
+        model.config.freeze_mm_vision_mlp_adapter = training_args.freeze_mm_vision_mlp_adapter
+        # 整个模型冻结
+        if training_args.freeze_mm_vision_mlp_adapter:
+            for p in model.get_model().mm_vision_projector.parameters():
                 p.requires_grad = False
 
+        # 转换数据类型
         if training_args.bits in [4, 8]:
-            model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)
+            model.get_model().mm_vision_projector.to(dtype=compute_dtype, device=training_args.device)
 
-        model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
-        training_args.use_im_start_end = model_args.mm_use_im_start_end
-        model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
+        # 配置其余所有vision相关参数
+        model.config.mm_vision_use_im_start_end = data_args.mm_vision_use_im_start_end = model_args.mm_vision_use_im_start_end
+        training_args.use_vision_im_start_end = model_args.mm_vision_use_im_start_end
+        model.config.mm_vision_use_im_patch_token = model_args.mm_vision_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
 
+<<<<<<< Updated upstream
+    # 视觉头
+    if model_args.audio_tower is not None:
+=======
+    # 音频头
+    if model_args.audio_tower is not None and model_args.vision_tower is None:
+>>>>>>> Stashed changes
+        model.get_model().initialize_audio_modules(
+            model_args=model_args,
+            fsdp=training_args.fsdp
+        )
+        
+<<<<<<< Updated upstream
+        # 视觉头单独处理
+=======
+        # 音频头单独处理
+>>>>>>> Stashed changes
+        audio_tower = model.get_audio_tower()
+        audio_tower.to(dtype=torch.float16, device=training_args.device)
+
+        data_args.audio_processor = audio_tower.audio_processor
+<<<<<<< Updated upstream
+        data_args.is_multimodal = True
+
+        # 设置图像信息
+        model.config.audio_aspect_ratio = data_args.audio_aspect_ratio
+        model.config.audio_grid_pinpoints = data_args.audio_grid_pinpoints
+=======
+        data_args.is_multimodal = 'audio'
+
+        # 设置音频信息
+        # model.config.audio_aspect_ratio = data_args.audio_aspect_ratio
+        # model.config.audio_grid_pinpoints = data_args.audio_grid_pinpoints
+>>>>>>> Stashed changes
+
+        # 设置adapter layer位置
+        model.config.tune_mm_audio_mlp_adapter = training_args.tune_mm_audio_mlp_adapter = model_args.tune_mm_audio_mlp_adapter
+        # 模型冻结梯度 只有投影位置训练
+        if model_args.tune_mm_audio_mlp_adapter:
+            model.requires_grad_(False)
+            for p in model.get_model().mm_audio_projector.parameters():
+                p.requires_grad = True
+
+        # 整体冻结
+        model.config.freeze_mm_audio_mlp_adapter = training_args.freeze_mm_audio_mlp_adapter
+        # 整个模型冻结
+        if training_args.freeze_mm_audio_mlp_adapter:
+            for p in model.get_model().mm_audio_projector.parameters():
+                p.requires_grad = False
+
+        # 转换数据类型
+        if training_args.bits in [4, 8]:
+            model.get_model().mm_audio_projector.to(dtype=compute_dtype, device=training_args.device)
+
+        # 配置所有剩余音频头参数
+        model.config.mm_audio_use_im_start_end = data_args.mm_audio_use_im_start_end = model_args.mm_audio_use_im_start_end
+        training_args.use_audio_im_start_end = model_args.mm_audio_use_im_start_end
+        model.config.mm_audio_use_im_patch_token = model_args.mm_audio_use_im_patch_token
+        model.initialize_audio_tokenizer(model_args, tokenizer=tokenizer)
+
+<<<<<<< Updated upstream
+    if model_args.compact:
+        # 设置adapter layer位置
+        model.config.tune_mm_audio_mlp_adapter = training_args.tune_mm_audio_mlp_adapter = model_args.tune_mm_audio_mlp_adapter
+        model.config.tune_mm_vision_mlp_adapter = training_args.tune_mm_vision_mlp_adapter = model_args.tune_mm_vision_mlp_adapter
+=======
+    # 多模态
+    if model_args.compact_model:
+        model.get_model().initialize_vision_modules(
+            model_args=model_args,
+            fsdp=training_args.fsdp
+        )
+        
+        # 视觉头单独处理
+        vision_tower = model.get_vision_tower()
+        vision_tower.to(dtype=torch.float16, device=training_args.device)
+
+        data_args.image_processor = vision_tower.image_processor
+
+        # 设置图像信息
+        model.config.image_aspect_ratio = data_args.image_aspect_ratio
+        model.config.image_grid_pinpoints = data_args.image_grid_pinpoints
+        model.get_model().initialize_audio_modules(
+            model_args=model_args,
+            fsdp=training_args.fsdp
+        )
+        
+        # 音频头单独处理
+        audio_tower = model.get_audio_tower()
+        audio_tower.to(dtype=torch.float16, device=training_args.device)
+
+        data_args.audio_processor = audio_tower.audio_processor
+        data_args.is_multimodal = 'compact'
+
+        # 设置adapter layer位置
+        model.config.tune_mm_audio_mlp_adapter = training_args.tune_mm_audio_mlp_adapter = model_args.tune_mm_audio_mlp_adapter
+        model.config.tune_mm_vision_mlp_adapter = training_args.tune_mm_vision_mlp_adapter = model_args.tune_mm_vision_mlp_adapter
+        
+>>>>>>> Stashed changes
+        # 模型冻结梯度 只有投影位置训练
+        if model_args.tune_mm_audio_mlp_adapter:
+            model.requires_grad_(False)
+            for p in model.get_model().mm_audio_projector.parameters():
+                p.requires_grad = True
+<<<<<<< Updated upstream
+
+=======
+>>>>>>> Stashed changes
+        # 模型冻结梯度 只有投影位置训练
+        if model_args.tune_mm_vision_mlp_adapter:
+            model.requires_grad_(False)
+            for p in model.get_model().mm_vision_projector.parameters():
+                p.requires_grad = True
+
+        # 整体冻结
+        model.config.freeze_mm_audio_mlp_adapter = training_args.freeze_mm_audio_mlp_adapter
+        model.config.freeze_mm_vision_mlp_adapter = training_args.freeze_mm_vision_mlp_adapter
+        # 整个模型冻结
+        if training_args.freeze_mm_audio_mlp_adapter:
+            for p in model.get_model().mm_audio_projector.parameters():
+                p.requires_grad = False
+        # 整个模型冻结
+        if training_args.freeze_mm_vision_mlp_adapter:
+            for p in model.get_model().mm_vision_projector.parameters():
+                p.requires_grad = False
+
+        # 转换数据类型
+        if training_args.bits in [4, 8]:
+            model.get_model().mm_audio_projector.to(dtype=compute_dtype, device=training_args.device)
+        if training_args.bits in [4, 8]:
+            model.get_model().mm_vision_projector.to(dtype=compute_dtype, device=training_args.device)
+
+        # 配置所有剩余音频头参数
+        model.config.mm_audio_use_im_start_end = data_args.mm_audio_use_im_start_end = model_args.mm_compact_use_im_start_end
+        training_args.use_audio_im_start_end = model_args.mm_compact_use_im_start_end
+        model.config.mm_audio_use_im_patch_token = model_args.mm_compact_use_im_start_end
+        model.initialize_audio_tokenizer(model_args, tokenizer=tokenizer)
+
+        model.config.mm_vision_use_im_start_end = data_args.mm_vision_use_im_start_end = model_args.mm_compact_use_im_start_end
+        training_args.use_vision_im_start_end = model_args.mm_compact_use_im_start_end
+        model.config.mm_vision_use_im_patch_token = model_args.mm_compact_use_im_start_end
+        model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+
+    # lora 对应模块转换成浮点
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
         for name, module in model.named_modules():
@@ -915,9 +1376,12 @@ def train():
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
+    # 创建监督学习模块
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
-    trainer = LLaVATrainer(model=model,
+
+    # 训练器
+    trainer = robotGPTTrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
                     **data_module)
@@ -930,10 +1394,13 @@ def train():
 
     model.config.use_cache = True
 
+    # lora模式
     if training_args.lora_enable:
+        # 需要加lora的地方加上bias
         state_dict = get_peft_state_maybe_zero_3(
             model.named_parameters(), training_args.lora_bias
         )
+        # 其他地方忽略
         non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
             model.named_parameters()
         )
