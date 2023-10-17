@@ -4,7 +4,7 @@
 ## Image
 Image tower pretrain code is tested.   
 The dataset is CC3M,  the same as the LLaVA ones.  
-Dataset web: [https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/blob/main/llava_instruct_150k.json](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K)  
+Dataset web: [LLaVA pretrain Images Json](https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K)  
 Images:    
 ```
 链接：https://pan.baidu.com/s/1eQbfEK07DaKo2HzdFXwN7A 
