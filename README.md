@@ -1,5 +1,5 @@
 # RobotGPT
- use llava to add other multi modal ability
+ Use llava to add other multi modal ability
 # The current progress 
 ## Image
 Image tower pretrain code is tested.   
@@ -13,7 +13,7 @@ Images:
 ```
 ## Audio
 Audio tower pretrain code tested.  
-(many have some problem in sampling rate calculationg for the audio file reader, need further check)    
+(May have some problem in sampling rate calculation for the audio file reader, need further check)    
 The audio dataset is audiocaps.  
 Audio Dataset:   
 ```
