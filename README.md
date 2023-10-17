@@ -1,4 +1,4 @@
-# robotGPT
+# RobotGPT
  use llava to add other multi modal ability
 # The current progress 
 ## Image
@@ -21,4 +21,5 @@ Audio Dataset:
 --来自百度网盘超级会员V7的分享
 ```
 Detail setting for Json file: /pretrain/audiocap_setting.zip  
-## cli inference not finished yet
+## Cli inference
+Not finished testing yet
