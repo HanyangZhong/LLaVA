@@ -22,5 +22,7 @@ Audio Dataset:
 --来自百度网盘超级会员V7的分享
 ```
 Detail setting for Json file: /pretrain/audiocap_setup.zip  
+In check_files.py, it would be suggested to set files at least larger than 100k.  
+That can help reducing dataset problem.
 ## Cli inference
 Not finished testing yet
